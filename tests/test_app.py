@@ -1,13 +1,21 @@
 """Integration tests for the OpenID Connect provider Flask application."""
 
+import base64
 import json
-import re
 import urllib.parse
 
-import jwt
 import pytest
+from joserfc import jwt as jose_jwt
+from joserfc.jwk import RSAKey
 
 import app as oidc_app
+
+
+def _decode_jwt_payload(token: str) -> dict:
+    """Decode JWT payload without signature verification (for assertion helpers)."""
+    payload_b64 = token.split(".")[1]
+    payload_b64 += "=" * (4 - len(payload_b64) % 4)
+    return json.loads(base64.urlsafe_b64decode(payload_b64))
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +211,7 @@ class TestToken:
             },
         )
         id_token = resp.get_json()["id_token"]
-        payload = jwt.decode(id_token, options={"verify_signature": False})
+        payload = _decode_jwt_payload(id_token)
         assert payload["sub"] == "alice"
 
     def test_id_token_contains_nonce(self, client):
@@ -217,7 +225,7 @@ class TestToken:
                 "client_id": _AUTHORIZE_PARAMS["client_id"],
             },
         )
-        payload = jwt.decode(resp.get_json()["id_token"], options={"verify_signature": False})
+        payload = _decode_jwt_payload(resp.get_json()["id_token"])
         assert payload.get("nonce") == "mynonce"
 
     def test_invalid_code_returns_400(self, client):
@@ -247,9 +255,6 @@ class TestToken:
         assert resp.status_code == 400
 
     def test_id_token_verifiable_with_jwks(self, client):
-        from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
-        import base64
-
         code, _ = _do_login(client, "alice")
         resp = client.post(
             "/token",
@@ -262,18 +267,10 @@ class TestToken:
         )
         id_token = resp.get_json()["id_token"]
 
-        jwks = client.get("/.well-known/jwks.json").get_json()
-        from jwt.algorithms import RSAAlgorithm
-        key_data = json.dumps(jwks["keys"][0])
-        public_key = RSAAlgorithm.from_jwk(key_data)
-
-        payload = jwt.decode(
-            id_token,
-            public_key,
-            algorithms=["RS256"],
-            audience=_AUTHORIZE_PARAMS["client_id"],
-        )
-        assert payload["sub"] == "alice"
+        jwks_data = client.get("/.well-known/jwks.json").get_json()
+        pub_key = RSAKey.import_key(jwks_data["keys"][0])
+        token = jose_jwt.decode(id_token, pub_key)
+        assert token.claims["sub"] == "alice"
 
 
 # ---------------------------------------------------------------------------

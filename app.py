@@ -11,18 +11,14 @@ Usage::
     ISSUER=https://auth.example flask run
 """
 
-import base64
 import os
 import secrets
 import time
 import urllib.parse
 from functools import lru_cache
-from math import ceil
 
-import jwt
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from joserfc import jwt
+from joserfc.jwk import RSAKey
 from flask import (
     Flask,
     jsonify,
@@ -62,26 +58,10 @@ ID_TOKEN_TTL = 3600
 # ---------------------------------------------------------------------------
 
 @lru_cache(maxsize=1)
-def _rsa_private_key():
-    return rsa.generate_private_key(
-        public_exponent=65537,
-        key_size=2048,
-        backend=default_backend(),
-    )
-
-
-def _rsa_public_key():
-    return _rsa_private_key().public_key()
-
-
-def _key_id() -> str:
-    """Stable key ID derived from the public key fingerprint."""
-    pub_bytes = _rsa_public_key().public_bytes(
-        serialization.Encoding.DER,
-        serialization.PublicFormat.SubjectPublicKeyInfo,
-    )
-    import hashlib
-    return hashlib.sha256(pub_bytes).hexdigest()[:16]
+def _signing_key() -> RSAKey:
+    key = RSAKey.generate_key(2048)
+    key.ensure_kid()
+    return key
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +92,7 @@ def _purge_expired() -> None:
 
 
 def _make_id_token(sub: str, client_id: str, nonce: str | None, extra_claims: dict | None = None) -> str:
+    key = _signing_key()
     now = _now()
     payload = {
         "iss": _issuer(),
@@ -124,12 +105,7 @@ def _make_id_token(sub: str, client_id: str, nonce: str | None, extra_claims: di
         payload["nonce"] = nonce
     if extra_claims:
         payload.update(extra_claims)
-    return jwt.encode(
-        payload,
-        _rsa_private_key(),
-        algorithm="RS256",
-        headers={"kid": _key_id()},
-    )
+    return jwt.encode({"alg": "RS256", "kid": key.kid}, payload, key)
 
 
 def _make_access_token(sub: str, scope: str) -> str:
@@ -142,22 +118,11 @@ def _make_access_token(sub: str, scope: str) -> str:
     return token
 
 
-def _int_to_base64url(n: int) -> str:
-    length = ceil(n.bit_length() / 8)
-    return base64.urlsafe_b64encode(n.to_bytes(length, "big")).rstrip(b"=").decode()
-
-
 def _jwks_for_key() -> dict:
-    pub = _rsa_public_key()
-    pub_numbers = pub.public_numbers()
-    return {
-        "kty": "RSA",
-        "use": "sig",
-        "alg": "RS256",
-        "kid": _key_id(),
-        "n": _int_to_base64url(pub_numbers.n),
-        "e": _int_to_base64url(pub_numbers.e),
-    }
+    jwk = _signing_key().as_dict(private=False)
+    jwk["use"] = "sig"
+    jwk["alg"] = "RS256"
+    return jwk
 
 
 # ---------------------------------------------------------------------------
