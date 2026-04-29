@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign In — Insecure OpenID Provider</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #f5f5f5;
+      display: flex;
+      min-height: 100vh;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+
+    .card {
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 2px 16px rgba(0,0,0,.12);
+      padding: 2rem;
+      width: 100%;
+      max-width: 480px;
+    }
+
+    h1 {
+      font-size: 1.4rem;
+      margin-bottom: .25rem;
+      color: #111;
+    }
+
+    .subtitle {
+      color: #666;
+      font-size: .9rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .section-label {
+      font-size: .75rem;
+      font-weight: 600;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: #888;
+      margin: 1.25rem 0 .5rem;
+    }
+
+    .user-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: .5rem;
+    }
+
+    .user-btn {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: .75rem;
+      padding: .75rem 1rem;
+      border: 1.5px solid #e0e0e0;
+      border-radius: 6px;
+      background: #fafafa;
+      cursor: pointer;
+      text-align: left;
+      font-size: 1rem;
+      transition: border-color .15s, background .15s;
+    }
+
+    .user-btn:hover, .user-btn:focus {
+      border-color: #4a90e2;
+      background: #f0f7ff;
+      outline: none;
+    }
+
+    .avatar {
+      width: 2.5rem;
+      height: 2.5rem;
+      border-radius: 50%;
+      background: #4a90e2;
+      color: #fff;
+      font-weight: 700;
+      font-size: 1rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      text-transform: uppercase;
+    }
+
+    .user-info { flex: 1; }
+    .user-name { font-weight: 600; color: #222; }
+    .user-email { font-size: .8rem; color: #888; margin-top: .1rem; }
+
+    .recent-badge {
+      font-size: .7rem;
+      font-weight: 600;
+      background: #e8f4ea;
+      color: #2d7a3a;
+      border-radius: 4px;
+      padding: .15rem .45rem;
+      flex-shrink: 0;
+    }
+
+    .warning {
+      margin-top: 2rem;
+      padding: .75rem 1rem;
+      background: #fff8e1;
+      border-left: 4px solid #f9a825;
+      border-radius: 4px;
+      font-size: .82rem;
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+  <main class="card" role="main">
+    <h1>Choose an account</h1>
+    <p class="subtitle">Select a test identity to sign in as.</p>
+
+    {% if recent_users %}
+    <p class="section-label" id="recent-label">Recently used</p>
+    <ul class="user-list" aria-labelledby="recent-label" data-testid="recent-users">
+      {% for user in recent_users %}
+      <li>
+        <form method="post" action="/authorize">
+          {% for key, value in params.items() %}
+          <input type="hidden" name="{{ key }}" value="{{ value }}" />
+          {% endfor %}
+          <input type="hidden" name="sub" value="{{ user.sub }}" />
+          <button
+            type="submit"
+            class="user-btn"
+            id="user-{{ user.sub }}"
+            data-testid="user-{{ user.sub }}"
+            aria-label="Sign in as {{ user.name }}"
+          >
+            <span class="avatar" aria-hidden="true">{{ user.name[0] }}</span>
+            <span class="user-info">
+              <span class="user-name">{{ user.name }}</span>
+              <span class="user-email">{{ user.email }}</span>
+            </span>
+            <span class="recent-badge">recent</span>
+          </button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+
+    {% if other_users %}
+    <p class="section-label" id="all-label">
+      {% if recent_users %}All accounts{% else %}Accounts{% endif %}
+    </p>
+    <ul class="user-list" aria-labelledby="all-label" data-testid="all-users">
+      {% for user in other_users %}
+      <li>
+        <form method="post" action="/authorize">
+          {% for key, value in params.items() %}
+          <input type="hidden" name="{{ key }}" value="{{ value }}" />
+          {% endfor %}
+          <input type="hidden" name="sub" value="{{ user.sub }}" />
+          <button
+            type="submit"
+            class="user-btn"
+            id="user-{{ user.sub }}"
+            data-testid="user-{{ user.sub }}"
+            aria-label="Sign in as {{ user.name }}"
+          >
+            <span class="avatar" aria-hidden="true">{{ user.name[0] }}</span>
+            <span class="user-info">
+              <span class="user-name">{{ user.name }}</span>
+              <span class="user-email">{{ user.email }}</span>
+            </span>
+          </button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+
+    <div class="warning" role="note">
+      ⚠️ This is an <strong>insecure</strong> identity provider for automated testing only.
+      Do not use in production.
+    </div>
+  </main>
+</body>
+</html>

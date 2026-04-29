@@ -1,0 +1,19 @@
+[project]
+name = "insecure-openid-provider"
+version = "0.1.0"
+description = "An insecure OpenID Connect Identity Provider for automated testing"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "flask>=3.0",
+    "joserfc>=1.6",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-flask>=1.3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
