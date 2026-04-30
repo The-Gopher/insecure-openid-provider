@@ -17,9 +17,8 @@ COPY templates/ templates/
 # Default user list — override at runtime with USERS_CSV or by mounting a volume
 COPY users.csv ./
 
-ENV FLASK_APP=app.py \
-    USERS_CSV=users.csv
+ENV USERS_CSV=users.csv
 
 EXPOSE 5000
 
-CMD ["uv", "run", "flask", "run", "--host", "0.0.0.0"]
+CMD ["uv", "run", "gunicorn", "--bind", "0.0.0.0:5000", "app:app"]
