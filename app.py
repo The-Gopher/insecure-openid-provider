@@ -313,6 +313,26 @@ def userinfo():
 
 
 # ---------------------------------------------------------------------------
+# Home page
+# ---------------------------------------------------------------------------
+
+@app.get("/")
+def home():
+    from_url = request.args.get("from")
+    return render_template("home.html", from_url=from_url)
+
+
+# ---------------------------------------------------------------------------
+# Catch-all — redirect unknown paths to home with the original URL
+# ---------------------------------------------------------------------------
+
+@app.errorhandler(404)
+def not_found(exc):
+    original = request.url
+    return redirect(url_for("home", **{"from": original}))
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

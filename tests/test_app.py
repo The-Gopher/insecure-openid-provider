@@ -307,3 +307,46 @@ class TestUserInfo:
     def test_missing_token_returns_401(self, client):
         resp = client.get("/userinfo")
         assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Home page
+# ---------------------------------------------------------------------------
+
+class TestHomePage:
+    def test_returns_200(self, client):
+        resp = client.get("/")
+        assert resp.status_code == 200
+
+    def test_contains_title(self, client):
+        resp = client.get("/")
+        assert b"Insecure OpenID Provider" in resp.data
+
+    def test_no_from_notice_by_default(self, client):
+        resp = client.get("/")
+        assert b'data-testid="from-notice"' not in resp.data
+
+    def test_from_notice_shown_when_param_present(self, client):
+        resp = client.get("/?from=http%3A%2F%2Flocalhost%2Funknown")
+        html = resp.data.decode()
+        assert 'data-testid="from-notice"' in html
+        assert "http://localhost/unknown" in html
+
+
+# ---------------------------------------------------------------------------
+# Unknown-URL redirect to home page
+# ---------------------------------------------------------------------------
+
+class TestUnknownUrlRedirect:
+    def test_unknown_path_redirects_to_home(self, client):
+        resp = client.get("/this/path/does/not/exist", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["Location"].startswith("/")
+        assert "from=" in resp.headers["Location"]
+
+    def test_redirect_follows_to_home_with_notice(self, client):
+        resp = client.get("/no-such-endpoint", follow_redirects=True)
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'data-testid="from-notice"' in html
+        assert "no-such-endpoint" in html
