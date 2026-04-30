@@ -6,9 +6,9 @@ so that test suites can authenticate without real credentials.
 
 Usage::
 
-    flask run              # uses users.csv in the current directory
-    USERS_CSV=my.csv flask run
-    ISSUER=https://auth.example flask run
+    gunicorn app:app              # uses users.csv in the current directory
+    USERS_CSV=my.csv gunicorn app:app
+    ISSUER=https://auth.example gunicorn app:app
 """
 
 import os
