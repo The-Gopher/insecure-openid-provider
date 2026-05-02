@@ -20,6 +20,7 @@ import urllib.parse
 from functools import lru_cache
 
 from joserfc import jwt
+from joserfc.errors import JoseError
 from joserfc.jwk import RSAKey
 from flask import (
     Flask,
@@ -73,7 +74,7 @@ def _signing_key() -> RSAKey:
             key = RSAKey.import_key(key_data)
             key.ensure_kid()
             return key
-        except Exception:
+        except (json.JSONDecodeError, ValueError, KeyError, TypeError, OSError, JoseError):
             logging.warning(
                 "Signing key at %s is invalid or unreadable; generating a new one.",
                 key_file,
@@ -83,9 +84,8 @@ def _signing_key() -> RSAKey:
     key.ensure_kid()
 
     try:
-        dir_name = os.path.dirname(key_file)
-        if dir_name:
-            os.makedirs(dir_name, exist_ok=True)
+        dir_name = os.path.dirname(os.path.abspath(key_file))
+        os.makedirs(dir_name, exist_ok=True)
         with open(key_file, "w") as f:
             json.dump(key.as_dict(private=True), f)
     except OSError as exc:
