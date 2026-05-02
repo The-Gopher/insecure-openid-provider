@@ -337,6 +337,7 @@ class TestCORS:
 
     def test_token_preflight_returns_cors_headers(self, client):
         resp = client.options("/token")
+        assert resp.status_code == 200
         assert resp.headers.get("Access-Control-Allow-Origin") == "*"
         assert "POST" in resp.headers.get("Access-Control-Allow-Methods", "")
         assert "auth0-client" in resp.headers.get("Access-Control-Allow-Headers", "")

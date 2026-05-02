@@ -129,6 +129,13 @@ def _jwks_for_key() -> dict:
 # CORS — allow any browser origin (this is an intentionally insecure testing tool)
 # ---------------------------------------------------------------------------
 
+@app.before_request
+def handle_preflight():
+    """Return 200 OK for CORS preflight OPTIONS requests on any route."""
+    if request.method == "OPTIONS":
+        return "", 200
+
+
 @app.after_request
 def add_cors_headers(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
