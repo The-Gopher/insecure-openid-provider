@@ -158,19 +158,6 @@ def _jwks_for_key() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# CORS — allow any browser origin (this is an intentionally insecure testing tool)
-# ---------------------------------------------------------------------------
-
-@app.after_request
-def add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, auth0-client"
-    response.headers["Access-Control-Max-Age"] = "3600"
-    return response
-
-
-# ---------------------------------------------------------------------------
 # OpenID Connect discovery & JWKS
 # ---------------------------------------------------------------------------
 
@@ -285,7 +272,8 @@ def authorize_submit():
 # Token endpoint
 # ---------------------------------------------------------------------------
 
-@app.post("/token")
+
+@app.post("/token", provide_automatic_options=False)
 def token():
     _purge_expired()
 
@@ -327,6 +315,17 @@ def token():
         }
     )
 
+@app.route("/token", methods=["OPTIONS"])
+def token_options():
+    # Allow CORS preflight requests to the token endpoint, which is commonly used in testing scenarios.
+    response = app.make_default_options_response()
+    headers = response.headers
+
+    headers["Access-Control-Allow-Origin"] = "*"
+    headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, auth0-client"
+
+    return response
 
 # ---------------------------------------------------------------------------
 # UserInfo endpoint
