@@ -186,7 +186,7 @@ class TestToken:
     def test_returns_tokens(self, client):
         code, _ = _do_login(client, "alice")
         resp = client.post(
-            "/token",
+            "/oauth/token",
             data={
                 "grant_type": "authorization_code",
                 "code": code,
@@ -203,7 +203,7 @@ class TestToken:
     def test_id_token_contains_sub(self, client):
         code, _ = _do_login(client, "alice")
         resp = client.post(
-            "/token",
+            "/oauth/token",
             data={
                 "grant_type": "authorization_code",
                 "code": code,
@@ -218,7 +218,7 @@ class TestToken:
     def test_id_token_contains_nonce(self, client):
         code, _ = _do_login(client, "alice")
         resp = client.post(
-            "/token",
+            "/oauth/token",
             data={
                 "grant_type": "authorization_code",
                 "code": code,
@@ -231,7 +231,7 @@ class TestToken:
 
     def test_invalid_code_returns_400(self, client):
         resp = client.post(
-            "/token",
+            "/oauth/token",
             data={
                 "grant_type": "authorization_code",
                 "code": "invalid-code",
@@ -247,18 +247,18 @@ class TestToken:
             "code": code,
             "redirect_uri": _AUTHORIZE_PARAMS["redirect_uri"],
         }
-        client.post("/token", data=token_params)
-        resp2 = client.post("/token", data=token_params)
+        client.post("/oauth/token", data=token_params)
+        resp2 = client.post("/oauth/token", data=token_params)
         assert resp2.status_code == 400
 
     def test_unsupported_grant_type(self, client):
-        resp = client.post("/token", data={"grant_type": "client_credentials"})
+        resp = client.post("/oauth/token", data={"grant_type": "client_credentials"})
         assert resp.status_code == 400
 
     def test_id_token_verifiable_with_jwks(self, client):
         code, _ = _do_login(client, "alice")
         resp = client.post(
-            "/token",
+            "/oauth/token",
             data={
                 "grant_type": "authorization_code",
                 "code": code,
@@ -282,7 +282,7 @@ class TestUserInfo:
     def _get_access_token(self, client, sub="alice"):
         code, _ = _do_login(client, sub)
         resp = client.post(
-            "/token",
+            "/oauth/token",
             data={
                 "grant_type": "authorization_code",
                 "code": code,
@@ -317,7 +317,7 @@ class TestUserInfo:
 class TestCORS:
 
     def test_token_preflight_returns_cors_headers(self, client):
-        resp = client.options("/token")
+        resp = client.options("/oauth/token")
         assert resp.status_code == 200
         assert resp.headers.get("Access-Control-Allow-Origin") == "*"
         assert "POST" in resp.headers.get("Access-Control-Allow-Methods", "")
@@ -342,7 +342,7 @@ class TestHomePage:
         assert b'data-testid="from-notice"' not in resp.data
 
     def test_from_notice_shown_when_param_present(self, client):
-        resp = client.get("/?from=http%3A%2F%2Flocalhost%2Funknown")
+        resp = client.get("/?from_url=http%3A%2F%2Flocalhost%2Funknown")
         html = resp.data.decode()
         assert 'data-testid="from-notice"' in html
         assert "http://localhost/unknown" in html
@@ -357,7 +357,7 @@ class TestUnknownUrlRedirect:
         resp = client.get("/this/path/does/not/exist", follow_redirects=False)
         assert resp.status_code == 302
         assert resp.headers["Location"].startswith("/")
-        assert "from=" in resp.headers["Location"]
+        assert "from_url=" in resp.headers["Location"]
 
     def test_redirect_follows_to_home_with_notice(self, client):
         resp = client.get("/no-such-endpoint", follow_redirects=True)
