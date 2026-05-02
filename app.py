@@ -74,10 +74,11 @@ def _signing_key() -> RSAKey:
             key = RSAKey.import_key(key_data)
             key.ensure_kid()
             return key
-        except (json.JSONDecodeError, ValueError, KeyError, TypeError, OSError, JoseError):
+        except (json.JSONDecodeError, ValueError, KeyError, TypeError, OSError, JoseError) as exc:
             logging.warning(
-                "Signing key at %s is invalid or unreadable; generating a new one.",
+                "Signing key at %s is invalid or unreadable (%s); generating a new one.",
                 key_file,
+                exc,
             )
 
     key = RSAKey.generate_key(2048)
@@ -85,9 +86,10 @@ def _signing_key() -> RSAKey:
 
     try:
         dir_name = os.path.dirname(os.path.abspath(key_file))
-        os.makedirs(dir_name, exist_ok=True)
+        os.makedirs(dir_name, mode=0o700, exist_ok=True)
         with open(key_file, "w") as f:
             json.dump(key.as_dict(private=True), f)
+        os.chmod(key_file, 0o600)
     except OSError as exc:
         logging.warning("Could not persist signing key to %s: %s", key_file, exc)
 
