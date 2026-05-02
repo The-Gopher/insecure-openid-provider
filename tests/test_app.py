@@ -310,6 +310,62 @@ class TestUserInfo:
 
 
 # ---------------------------------------------------------------------------
+# CORS headers
+# ---------------------------------------------------------------------------
+
+class TestCORS:
+    """All API endpoints must carry permissive CORS headers for browser clients."""
+
+    def _assert_cors(self, resp):
+        assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+        assert "GET" in resp.headers.get("Access-Control-Allow-Methods", "")
+        assert "POST" in resp.headers.get("Access-Control-Allow-Methods", "")
+        assert "Content-Type" in resp.headers.get("Access-Control-Allow-Headers", "")
+
+    def test_token_endpoint_has_cors_headers(self, client):
+        code, _ = _do_login(client, "alice")
+        resp = client.post(
+            "/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": _AUTHORIZE_PARAMS["redirect_uri"],
+                "client_id": _AUTHORIZE_PARAMS["client_id"],
+            },
+        )
+        self._assert_cors(resp)
+
+    def test_token_preflight_returns_cors_headers(self, client):
+        resp = client.options("/token")
+        assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+        assert "POST" in resp.headers.get("Access-Control-Allow-Methods", "")
+        assert "auth0-client" in resp.headers.get("Access-Control-Allow-Headers", "")
+
+    def test_userinfo_endpoint_has_cors_headers(self, client):
+        code, _ = _do_login(client, "alice")
+        token_resp = client.post(
+            "/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": _AUTHORIZE_PARAMS["redirect_uri"],
+                "client_id": _AUTHORIZE_PARAMS["client_id"],
+            },
+        )
+        access_token = token_resp.get_json()["access_token"]
+        resp = client.get("/userinfo", headers={"Authorization": f"Bearer {access_token}"})
+        self._assert_cors(resp)
+
+    def test_discovery_endpoint_has_cors_headers(self, client):
+        resp = client.get("/.well-known/openid-configuration")
+        self._assert_cors(resp)
+
+    def test_jwks_endpoint_has_cors_headers(self, client):
+        resp = client.get("/.well-known/jwks.json")
+        self._assert_cors(resp)
+
+
+# ---------------------------------------------------------------------------
 # Home page
 # ---------------------------------------------------------------------------
 
