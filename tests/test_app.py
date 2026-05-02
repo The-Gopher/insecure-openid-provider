@@ -2,6 +2,7 @@
 
 import base64
 import json
+import os
 import urllib.parse
 
 import pytest
@@ -406,3 +407,61 @@ class TestUnknownUrlRedirect:
         html = resp.data.decode()
         assert 'data-testid="from-notice"' in html
         assert "no-such-endpoint" in html
+
+
+# ---------------------------------------------------------------------------
+# Signing key persistence
+# ---------------------------------------------------------------------------
+
+class TestSigningKeyPersistence:
+    def setup_method(self):
+        oidc_app._signing_key.cache_clear()
+
+    def teardown_method(self):
+        oidc_app._signing_key.cache_clear()
+
+    def test_generates_and_saves_key_file(self, tmp_path, monkeypatch):
+        key_file = str(tmp_path / "signing_key.json")
+        monkeypatch.setenv("SIGNING_KEY_FILE", key_file)
+        key = oidc_app._signing_key()
+        assert key is not None
+        assert os.path.isfile(key_file)
+        with open(key_file) as f:
+            data = json.load(f)
+        assert data.get("kty") == "RSA"
+        assert "d" in data  # private component must be present
+
+    def test_loads_existing_valid_key(self, tmp_path, monkeypatch):
+        key_file = str(tmp_path / "signing_key.json")
+        monkeypatch.setenv("SIGNING_KEY_FILE", key_file)
+        # Generate and save a key
+        key1 = oidc_app._signing_key()
+        kid1 = key1.kid
+        # Clear cache and reload — should return the same key id
+        oidc_app._signing_key.cache_clear()
+        key2 = oidc_app._signing_key()
+        assert key2.kid == kid1
+
+    def test_regenerates_key_when_file_contains_invalid_json(self, tmp_path, monkeypatch):
+        key_file = str(tmp_path / "signing_key.json")
+        key_file_path = tmp_path / "signing_key.json"
+        key_file_path.write_text("not valid json {{{{")
+        monkeypatch.setenv("SIGNING_KEY_FILE", key_file)
+        key = oidc_app._signing_key()
+        assert key is not None
+        # The file should be overwritten with a valid key
+        with open(key_file) as f:
+            data = json.load(f)
+        assert data.get("kty") == "RSA"
+
+    def test_regenerates_key_when_file_contains_invalid_key_data(self, tmp_path, monkeypatch):
+        key_file = str(tmp_path / "signing_key.json")
+        (tmp_path / "signing_key.json").write_text(json.dumps({"kty": "RSA", "n": "bad"}))
+        monkeypatch.setenv("SIGNING_KEY_FILE", key_file)
+        key = oidc_app._signing_key()
+        assert key is not None
+
+    def test_continues_in_memory_when_directory_unwritable(self, monkeypatch):
+        monkeypatch.setenv("SIGNING_KEY_FILE", "/nonexistent_dir_xyz/key.json")
+        key = oidc_app._signing_key()
+        assert key is not None

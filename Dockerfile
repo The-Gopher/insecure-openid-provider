@@ -19,6 +19,9 @@ COPY users.csv ./
 
 ENV USERS_CSV=users.csv
 
+# Persist the RSA signing key across container restarts
+VOLUME /data
+
 EXPOSE 5000
 
 CMD ["uv", "run", "gunicorn", "--bind", "0.0.0.0:5000", "app:app"]
