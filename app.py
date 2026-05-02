@@ -11,6 +11,8 @@ Usage::
     ISSUER=https://auth.example gunicorn app:app
 """
 
+import json
+import logging
 import os
 import secrets
 import time
@@ -18,6 +20,7 @@ import urllib.parse
 from functools import lru_cache
 
 from joserfc import jwt
+from joserfc.errors import JoseError
 from joserfc.jwk import RSAKey
 from flask import (
     Flask,
@@ -54,13 +57,42 @@ ID_TOKEN_TTL = 3600
 
 
 # ---------------------------------------------------------------------------
-# RSA key pair — generated once per process lifetime
+# RSA key pair — loaded from disk (persisted) or generated once per process
 # ---------------------------------------------------------------------------
+
+_SIGNING_KEY_FILE_DEFAULT = "/data/signing_key.json"
+
 
 @lru_cache(maxsize=1)
 def _signing_key() -> RSAKey:
+    key_file = os.environ.get("SIGNING_KEY_FILE", _SIGNING_KEY_FILE_DEFAULT)
+
+    if os.path.isfile(key_file):
+        try:
+            with open(key_file) as f:
+                key_data = json.load(f)
+            key = RSAKey.import_key(key_data)
+            key.ensure_kid()
+            return key
+        except (json.JSONDecodeError, ValueError, KeyError, TypeError, OSError, JoseError) as exc:
+            logging.warning(
+                "Signing key at %s is invalid or unreadable (%s); generating a new one.",
+                key_file,
+                exc,
+            )
+
     key = RSAKey.generate_key(2048)
     key.ensure_kid()
+
+    try:
+        dir_name = os.path.dirname(os.path.abspath(key_file))
+        os.makedirs(dir_name, mode=0o700, exist_ok=True)
+        with open(key_file, "w") as f:
+            json.dump(key.as_dict(private=True), f)
+        os.chmod(key_file, 0o600)
+    except OSError as exc:
+        logging.warning("Could not persist signing key to %s: %s", key_file, exc)
+
     return key
 
 
