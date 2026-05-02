@@ -161,24 +161,36 @@ def _jwks_for_key() -> dict:
 # OpenID Connect discovery & JWKS
 # ---------------------------------------------------------------------------
 
-@app.get("/.well-known/openid-configuration")
+
+@app.route("/.well-known/openid-configuration", methods=["GET", "OPTIONS"])
 def openid_configuration():
-    base = _issuer()
-    return jsonify(
-        {
-            "issuer": base,
-            "authorization_endpoint": base + url_for("authorize"),
-            "token_endpoint": base + url_for("token"),
-            "userinfo_endpoint": base + url_for("userinfo"),
-            "jwks_uri": base + url_for("jwks"),
-            "response_types_supported": ["code"],
-            "subject_types_supported": ["public"],
-            "id_token_signing_alg_values_supported": ["RS256"],
-            "scopes_supported": ["openid", "profile", "email"],
-            "token_endpoint_auth_methods_supported": ["none", "client_secret_post"],
-            "claims_supported": ["sub", "iss", "aud", "iat", "exp", "name", "email", "nonce"],
-        }
-    )
+    if request.method == "GET":
+        base = _issuer()
+        return jsonify(
+            {
+                "issuer": base,
+                "authorization_endpoint": base + url_for("authorize"),
+                "token_endpoint": base + url_for("token"),
+                "userinfo_endpoint": base + url_for("userinfo"),
+                "jwks_uri": base + url_for("jwks"),
+                "response_types_supported": ["code"],
+                "subject_types_supported": ["public"],
+                "id_token_signing_alg_values_supported": ["RS256"],
+                "scopes_supported": ["openid", "profile", "email"],
+                "token_endpoint_auth_methods_supported": ["none", "client_secret_post"],
+                "claims_supported": [
+                    "sub",
+                    "iss",
+                    "aud",
+                    "iat",
+                    "exp",
+                    "name",
+                    "email",
+                    "nonce",
+                ],
+            }
+        )
+    raise NotImplementedError("Only GET and OPTIONS are supported for this endpoint.")
 
 
 @app.get("/.well-known/jwks.json")
@@ -273,57 +285,73 @@ def authorize_submit():
 # ---------------------------------------------------------------------------
 
 
-@app.post("/token", provide_automatic_options=False)
+@app.route("/oauth/token", methods=["GET", "POST", "OPTIONS"])
 def token():
     _purge_expired()
 
-    grant_type = request.form.get("grant_type", "")
-    if grant_type != "authorization_code":
-        return jsonify({"error": "unsupported_grant_type"}), 400
+    if request.method == "POST":
 
-    code = request.form.get("code", "")
-    redirect_uri = request.form.get("redirect_uri", "")
+        grant_type = request.form.get("grant_type", "")
+        if grant_type != "authorization_code":
+            return jsonify({"error": "unsupported_grant_type"}), 400
 
-    code_data = _auth_codes.pop(code, None)
-    if code_data is None:
-        return jsonify({"error": "invalid_grant"}), 400
+        code = request.form.get("code", "")
+        redirect_uri = request.form.get("redirect_uri", "")
 
-    if code_data["exp"] < _now():
-        return jsonify({"error": "invalid_grant", "error_description": "code expired"}), 400
+        code_data = _auth_codes.pop(code, None)
+        if code_data is None:
+            return jsonify({"error": "invalid_grant"}), 400
 
-    if redirect_uri and code_data["redirect_uri"] != redirect_uri:
-        return jsonify({"error": "invalid_grant", "error_description": "redirect_uri mismatch"}), 400
+        if code_data["exp"] < _now():
+            return (
+                jsonify(
+                    {"error": "invalid_grant", "error_description": "code expired"}
+                ),
+                400,
+            )
 
-    sub = code_data["sub"]
-    scope = code_data["scope"]
+        if redirect_uri and code_data["redirect_uri"] != redirect_uri:
+            return (
+                jsonify(
+                    {
+                        "error": "invalid_grant",
+                        "error_description": "redirect_uri mismatch",
+                    }
+                ),
+                400,
+            )
 
-    source = _get_user_source()
-    user = source.get_user(sub)
-    extra = user.claims() if user else {}
-    extra.pop("sub", None)
+        sub = code_data["sub"]
+        scope = code_data["scope"]
 
-    id_token = _make_id_token(sub, code_data["client_id"], code_data["nonce"], extra)
-    access_token = _make_access_token(sub, scope)
+        source = _get_user_source()
+        user = source.get_user(sub)
+        extra = user.claims() if user else {}
+        extra.pop("sub", None)
 
-    return jsonify(
-        {
-            "access_token": access_token,
-            "token_type": "Bearer",
-            "expires_in": ACCESS_TOKEN_TTL,
-            "id_token": id_token,
-            "scope": scope,
-        }
-    )
+        id_token = _make_id_token(
+            sub, code_data["client_id"], code_data["nonce"], extra
+        )
+        access_token = _make_access_token(sub, scope)
 
-@app.route("/token", methods=["OPTIONS"])
-def token_options():
+        return jsonify(
+            {
+                "access_token": access_token,
+                "token_type": "Bearer",
+                "expires_in": ACCESS_TOKEN_TTL,
+                "id_token": id_token,
+                "scope": scope,
+            }
+        )
     # Allow CORS preflight requests to the token endpoint, which is commonly used in testing scenarios.
     response = app.make_default_options_response()
     headers = response.headers
 
     headers["Access-Control-Allow-Origin"] = "*"
     headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-    headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, auth0-client"
+    headers["Access-Control-Allow-Headers"] = (
+        "Content-Type, Authorization, auth0-client"
+    )
 
     return response
 
@@ -362,7 +390,7 @@ def userinfo():
 
 @app.get("/")
 def home():
-    from_url = request.args.get("from")
+    from_url = request.args.get("from_url")
     return render_template("home.html", from_url=from_url)
 
 
@@ -373,7 +401,7 @@ def home():
 @app.errorhandler(404)
 def not_found(exc):
     original = request.url
-    return redirect(url_for("home", **{"from": original}))
+    return redirect(url_for("home", from_url=original))
 
 
 # ---------------------------------------------------------------------------
@@ -382,4 +410,5 @@ def not_found(exc):
 
 if __name__ == "__main__":
     debug = os.environ.get("FLASK_DEBUG", "0") == "1"
-    app.run(debug=debug)
+    port = int(os.environ.get("FLASK_PORT", 6000))
+    app.run(debug=debug, port=port)
