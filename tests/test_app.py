@@ -273,6 +273,35 @@ class TestToken:
         token = jose_jwt.decode(id_token, pub_key)
         assert token.claims["sub"] == "alice"
 
+    def test_access_token_is_rs256_jwt(self, client):
+        code, _ = _do_login(client, "alice")
+        resp = client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": _AUTHORIZE_PARAMS["redirect_uri"],
+                "client_id": _AUTHORIZE_PARAMS["client_id"],
+            },
+        )
+        access_token = resp.get_json()["access_token"]
+
+        # Must be a three-part JWT
+        assert access_token.count(".") == 2
+
+        # Header must declare RS256
+        header_b64 = access_token.split(".")[0]
+        header_b64 += "=" * (4 - len(header_b64) % 4)
+        header = json.loads(base64.urlsafe_b64decode(header_b64))
+        assert header["alg"] == "RS256"
+
+        # Signature must be verifiable with the public key from JWKS
+        jwks_data = client.get("/.well-known/jwks.json").get_json()
+        pub_key = RSAKey.import_key(jwks_data["keys"][0])
+        token = jose_jwt.decode(access_token, pub_key)
+        assert token.claims["sub"] == "alice"
+        assert "scope" in token.claims
+
 
 # ---------------------------------------------------------------------------
 # UserInfo endpoint

@@ -43,7 +43,7 @@ app.secret_key = os.environ.get("SECRET_KEY", "insecure-testing-secret")
 # ---------------------------------------------------------------------------
 # authorization_code -> {sub, client_id, redirect_uri, nonce, scope, exp}
 _auth_codes: dict = {}
-# access_token -> {sub, scope, exp}
+# Kept for backward-compatibility with test fixtures; access tokens are now self-contained JWTs
 _access_tokens: dict = {}
 
 # How many recently-selected users to show at the top of the login list
@@ -118,9 +118,6 @@ def _purge_expired() -> None:
     expired_codes = [k for k, v in _auth_codes.items() if v["exp"] < now]
     for k in expired_codes:
         del _auth_codes[k]
-    expired_tokens = [k for k, v in _access_tokens.items() if v["exp"] < now]
-    for k in expired_tokens:
-        del _access_tokens[k]
 
 
 def _make_id_token(sub: str, client_id: str, nonce: str | None, extra_claims: dict | None = None) -> str:
@@ -141,13 +138,16 @@ def _make_id_token(sub: str, client_id: str, nonce: str | None, extra_claims: di
 
 
 def _make_access_token(sub: str, scope: str) -> str:
-    token = secrets.token_urlsafe(32)
-    _access_tokens[token] = {
+    key = _signing_key()
+    now = _now()
+    payload = {
+        "iss": _issuer(),
         "sub": sub,
+        "iat": now,
+        "exp": now + ACCESS_TOKEN_TTL,
         "scope": scope,
-        "exp": _now() + ACCESS_TOKEN_TTL,
     }
-    return token
+    return jwt.encode({"alg": "RS256", "kid": key.kid}, payload, key)
 
 
 def _jwks_for_key() -> dict:
@@ -386,13 +386,19 @@ def userinfo():
     if not bearer:
         return jsonify({"error": "unauthorized"}), 401
 
-    _purge_expired()
-    token_data = _access_tokens.get(bearer)
-    if token_data is None or token_data["exp"] < _now():
+    try:
+        key = _signing_key()
+        token_obj = jwt.decode(bearer, key)
+        claims = token_obj.claims
+        if claims.get("exp", 0) < _now():
+            return jsonify({"error": "invalid_token"}), 401
+        sub = claims["sub"]
+    except (JoseError, KeyError, ValueError) as exc:
+        logging.debug("Access token validation failed: %s: %s", type(exc).__name__, exc)
         return jsonify({"error": "invalid_token"}), 401
 
     source = _get_user_source()
-    user = source.get_user(token_data["sub"])
+    user = source.get_user(sub)
     if user is None:
         return jsonify({"error": "unknown_user"}), 404
 
