@@ -316,12 +316,56 @@ class TestUserInfo:
 
 class TestCORS:
 
-    def test_token_preflight_returns_cors_headers(self, client):
+    def test_token_preflight_without_origin_returns_wildcard(self, client):
         resp = client.options("/oauth/token")
         assert resp.status_code == 200
         assert resp.headers.get("Access-Control-Allow-Origin") == "*"
         assert "POST" in resp.headers.get("Access-Control-Allow-Methods", "")
         assert "auth0-client" in resp.headers.get("Access-Control-Allow-Headers", "")
+        assert "Access-Control-Allow-Credentials" not in resp.headers
+        assert "Vary" not in resp.headers
+
+    def test_token_preflight_with_origin_returns_origin_with_credentials(self, client):
+        resp = client.options("/oauth/token", headers={"Origin": "https://app.example.com"})
+        assert resp.status_code == 200
+        assert resp.headers.get("Access-Control-Allow-Origin") == "https://app.example.com"
+        assert resp.headers.get("Access-Control-Allow-Credentials") == "true"
+        assert resp.headers.get("Vary") == "Origin"
+        assert "POST" in resp.headers.get("Access-Control-Allow-Methods", "")
+        assert "auth0-client" in resp.headers.get("Access-Control-Allow-Headers", "")
+
+    def test_token_post_with_origin_returns_origin_with_credentials(self, client):
+        code, _ = _do_login(client, "alice")
+        resp = client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": _AUTHORIZE_PARAMS["redirect_uri"],
+                "client_id": _AUTHORIZE_PARAMS["client_id"],
+            },
+            headers={"Origin": "https://app.example.com"},
+        )
+        assert resp.status_code == 200
+        assert resp.headers.get("Access-Control-Allow-Origin") == "https://app.example.com"
+        assert resp.headers.get("Access-Control-Allow-Credentials") == "true"
+        assert resp.headers.get("Vary") == "Origin"
+
+    def test_token_post_without_origin_has_no_cors_headers(self, client):
+        code, _ = _do_login(client, "alice")
+        resp = client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": _AUTHORIZE_PARAMS["redirect_uri"],
+                "client_id": _AUTHORIZE_PARAMS["client_id"],
+            },
+        )
+        assert resp.status_code == 200
+        assert "Access-Control-Allow-Origin" not in resp.headers
+        assert "Access-Control-Allow-Credentials" not in resp.headers
+        assert "Vary" not in resp.headers
 
 
 # ---------------------------------------------------------------------------

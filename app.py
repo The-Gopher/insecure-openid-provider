@@ -334,7 +334,7 @@ def token():
         )
         access_token = _make_access_token(sub, scope)
 
-        return jsonify(
+        response = jsonify(
             {
                 "access_token": access_token,
                 "token_type": "Bearer",
@@ -343,11 +343,26 @@ def token():
                 "scope": scope,
             }
         )
+        origin = request.headers.get("Origin")
+        if origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers["Vary"] = "Origin"
+        return response
     # Allow CORS preflight requests to the token endpoint, which is commonly used in testing scenarios.
     response = app.make_default_options_response()
     headers = response.headers
 
-    headers["Access-Control-Allow-Origin"] = "*"
+    # Intentionally echo any Origin without validation — this is an insecure
+    # testing tool.  When an Origin is present we must not use "*" because
+    # browsers reject credentialed responses that have a wildcard ACAO header.
+    origin = request.headers.get("Origin")
+    if origin:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+        headers["Vary"] = "Origin"
+    else:
+        headers["Access-Control-Allow-Origin"] = "*"
     headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
     headers["Access-Control-Allow-Headers"] = (
         "Content-Type, Authorization, auth0-client"
