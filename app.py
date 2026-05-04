@@ -31,11 +31,14 @@ from flask import (
     session,
     url_for,
 )
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from users.csv_source import CSVUserSource
 from users.base import UserSource
 
 app = Flask(__name__)
+# Honor X-Forwarded-Proto/Host from a single upstream proxy that terminates TLS.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 app.secret_key = os.environ.get("SECRET_KEY", "insecure-testing-secret")
 
 # ---------------------------------------------------------------------------
@@ -161,18 +164,20 @@ def _jwks_for_key() -> dict:
 # OpenID Connect discovery & JWKS
 # ---------------------------------------------------------------------------
 
+def external_url_for(endpoint: str) -> str:
+    return url_for(endpoint, _external=True)
 
 @app.route("/.well-known/openid-configuration", methods=["GET", "OPTIONS"])
 def openid_configuration():
     if request.method == "GET":
         base = _issuer()
-        return jsonify(
+        response = jsonify(
             {
                 "issuer": base,
-                "authorization_endpoint": base + url_for("authorize"),
-                "token_endpoint": base + url_for("token"),
-                "userinfo_endpoint": base + url_for("userinfo"),
-                "jwks_uri": base + url_for("jwks"),
+                "authorization_endpoint":  external_url_for("authorize"),
+                "token_endpoint": external_url_for("token"),
+                "userinfo_endpoint": external_url_for("userinfo"),
+                "jwks_uri": external_url_for("jwks"),
                 "response_types_supported": ["code"],
                 "subject_types_supported": ["public"],
                 "id_token_signing_alg_values_supported": ["RS256"],
@@ -190,7 +195,16 @@ def openid_configuration():
                 ],
             }
         )
-    raise NotImplementedError("Only GET and OPTIONS are supported for this endpoint.")
+    else:
+        response = app.make_default_options_response()
+
+    headers = response.headers
+
+    headers["Access-Control-Allow-Origin"] = "*"
+    headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+    headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+
+    return response
 
 
 @app.get("/.well-known/jwks.json")
@@ -343,30 +357,19 @@ def token():
                 "scope": scope,
             }
         )
-        origin = request.headers.get("Origin")
-        if origin:
-            response.headers["Access-Control-Allow-Origin"] = origin
-            response.headers["Access-Control-Allow-Credentials"] = "true"
-            response.headers["Vary"] = "Origin"
-        return response
+    else:
+        response = app.make_default_options_response()
+
     # Allow CORS preflight requests to the token endpoint, which is commonly used in testing scenarios.
-    response = app.make_default_options_response()
     headers = response.headers
 
-    # Intentionally echo any Origin without validation — this is an insecure
-    # testing tool.  When an Origin is present we must not use "*" because
-    # browsers reject credentialed responses that have a wildcard ACAO header.
-    origin = request.headers.get("Origin")
-    if origin:
-        headers["Access-Control-Allow-Origin"] = origin
-        headers["Access-Control-Allow-Credentials"] = "true"
-        headers["Vary"] = "Origin"
-    else:
-        headers["Access-Control-Allow-Origin"] = "*"
+    headers["Access-Control-Allow-Origin"] = request.headers.get("Origin", "*")
     headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    headers["Access-Control-Allow-Credentials"] = "true"
     headers["Access-Control-Allow-Headers"] = (
         "Content-Type, Authorization, auth0-client"
     )
+    headers["Vary"] = "Origin"
 
     return response
 
