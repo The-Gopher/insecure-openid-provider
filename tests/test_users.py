@@ -1,13 +1,18 @@
 """Tests for the users package (User model and UserSource implementations)."""
 
 import csv
+import io
+import json
 import os
 import tempfile
+import urllib.error
 
 import pytest
 
 from users.base import User, UserSource
+from users.composite_source import CompositeUserSource
 from users.csv_source import CSVUserSource
+from users.http_source import HTTPUserSource
 
 
 # ---------------------------------------------------------------------------
@@ -158,3 +163,102 @@ class TestCSVUserSource:
         users = source.get_users()
         assert users[0].sub == "alice"
         assert users[0].name == "Alice"
+
+
+# ---------------------------------------------------------------------------
+# HTTPUserSource
+# ---------------------------------------------------------------------------
+
+
+def _fake_urlopen(payload_bytes: bytes):
+    """Return a callable that mimics urllib.request.urlopen returning *payload_bytes*."""
+
+    class _Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            self.close()
+            return False
+
+    def _call(url, timeout=None):
+        return _Resp(payload_bytes)
+
+    return _call
+
+
+class TestHTTPUserSource:
+    def test_parses_wrapped_users_payload(self, monkeypatch):
+        body = json.dumps({"users": [{"sub": "alice", "name": "Alice", "email": "a@x.com"}]}).encode()
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen(body))
+        users = HTTPUserSource("http://stub/users").get_users()
+        assert len(users) == 1
+        assert users[0].sub == "alice"
+        assert users[0].name == "Alice"
+        assert users[0].email == "a@x.com"
+
+    def test_extra_fields_go_in_extra(self, monkeypatch):
+        body = json.dumps({"users": [{"sub": "alice", "name": "Alice", "email": "a@x.com", "department": "eng"}]}).encode()
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen(body))
+        users = HTTPUserSource("http://stub/users").get_users()
+        assert users[0].extra.get("department") == "eng"
+
+    def test_skips_entries_without_sub(self, monkeypatch):
+        body = json.dumps({"users": [{"name": "no sub"}, {"sub": "ok", "name": "OK", "email": "o@x.com"}]}).encode()
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen(body))
+        users = HTTPUserSource("http://stub/users").get_users()
+        assert [u.sub for u in users] == ["ok"]
+
+    def test_accepts_id_and_username_aliases(self, monkeypatch):
+        body = json.dumps({"users": [{"id": "bob", "email": "b@x.com"}, {"username": "carol", "email": "c@x.com"}]}).encode()
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen(body))
+        users = HTTPUserSource("http://stub/users").get_users()
+        subs = sorted(u.sub for u in users)
+        assert subs == ["bob", "carol"]
+
+    def test_returns_empty_on_http_error(self, monkeypatch):
+        def boom(url, timeout=None):
+            raise urllib.error.URLError("connection refused")
+        monkeypatch.setattr("urllib.request.urlopen", boom)
+        assert HTTPUserSource("http://stub/users").get_users() == []
+
+    def test_returns_empty_on_invalid_json(self, monkeypatch):
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen(b"not json at all"))
+        assert HTTPUserSource("http://stub/users").get_users() == []
+
+    def test_returns_empty_when_payload_is_not_object(self, monkeypatch):
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen(b"[1, 2, 3]"))
+        assert HTTPUserSource("http://stub/users").get_users() == []
+
+
+# ---------------------------------------------------------------------------
+# CompositeUserSource
+# ---------------------------------------------------------------------------
+
+
+class _StaticSource(UserSource):
+    def __init__(self, users):
+        self._users = users
+
+    def get_users(self):
+        return list(self._users)
+
+
+class TestCompositeUserSource:
+    def test_concatenates_users_from_all_sources(self):
+        a = _StaticSource([User("alice", "Alice", "a@x.com")])
+        b = _StaticSource([User("bob", "Bob", "b@x.com")])
+        users = CompositeUserSource(a, b).get_users()
+        subs = sorted(u.sub for u in users)
+        assert subs == ["alice", "bob"]
+
+    def test_later_source_wins_on_duplicate_sub(self):
+        a = _StaticSource([User("alice", "Old Alice", "old@x.com")])
+        b = _StaticSource([User("alice", "New Alice", "new@x.com")])
+        users = CompositeUserSource(a, b).get_users()
+        assert len(users) == 1
+        assert users[0].name == "New Alice"
+        assert users[0].email == "new@x.com"
+
+    def test_empty_sources(self):
+        assert CompositeUserSource().get_users() == []

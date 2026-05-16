@@ -533,3 +533,33 @@ class TestSigningKeyPersistence:
         monkeypatch.setenv("SIGNING_KEY_FILE", "/nonexistent_dir_xyz/key.json")
         key = oidc_app._signing_key()
         assert key is not None
+
+
+# ---------------------------------------------------------------------------
+# User source wiring (_get_user_source)
+# ---------------------------------------------------------------------------
+
+class TestUserSourceWiring:
+    def test_uses_csv_only_when_no_api_url_env(self, tmp_path, monkeypatch):
+        csv_file = tmp_path / "users.csv"
+        csv_file.write_text("sub,name,email\nalice,Alice,alice@example.com\n")
+        monkeypatch.setenv("USERS_CSV", str(csv_file))
+        monkeypatch.delenv("USERS_API_URL", raising=False)
+        source = oidc_app._get_user_source()
+        from users.csv_source import CSVUserSource
+        assert isinstance(source, CSVUserSource)
+
+    def test_uses_composite_when_api_url_set(self, tmp_path, monkeypatch):
+        csv_file = tmp_path / "users.csv"
+        csv_file.write_text("sub,name,email\nalice,Alice,alice@example.com\n")
+        monkeypatch.setenv("USERS_CSV", str(csv_file))
+        monkeypatch.setenv("USERS_API_URL", "http://stub.local/users")
+        source = oidc_app._get_user_source()
+        from users.composite_source import CompositeUserSource
+        from users.csv_source import CSVUserSource
+        from users.http_source import HTTPUserSource
+        assert isinstance(source, CompositeUserSource)
+        assert len(source.sources) == 2
+        assert isinstance(source.sources[0], CSVUserSource)
+        assert isinstance(source.sources[1], HTTPUserSource)
+        assert source.sources[1].url == "http://stub.local/users"

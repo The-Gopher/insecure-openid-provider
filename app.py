@@ -33,8 +33,10 @@ from flask import (
 )
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from users.csv_source import CSVUserSource
 from users.base import UserSource
+from users.composite_source import CompositeUserSource
+from users.csv_source import CSVUserSource
+from users.http_source import HTTPUserSource
 
 app = Flask(__name__)
 # Honor X-Forwarded-Proto/Host from a single upstream proxy that terminates TLS.
@@ -105,7 +107,11 @@ def _signing_key() -> RSAKey:
 
 def _get_user_source() -> UserSource:
     csv_path = os.environ.get("USERS_CSV", "users.csv")
-    return CSVUserSource(csv_path)
+    csv_source = CSVUserSource(csv_path)
+    api_url = os.environ.get("USERS_API_URL")
+    if api_url:
+        return CompositeUserSource(csv_source, HTTPUserSource(api_url))
+    return csv_source
 
 
 def _issuer() -> str:
