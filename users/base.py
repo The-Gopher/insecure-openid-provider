@@ -11,6 +11,7 @@ class User:
     name: str
     email: str
     extra: Dict[str, str] = field(default_factory=dict)
+    tags: List[str] = field(default_factory=list)
 
     def claims(self) -> dict:
         """Return the standard OpenID Connect claims for this user."""

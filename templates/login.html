@@ -104,6 +104,23 @@
       flex-shrink: 0;
     }
 
+    .user-tags {
+      display: flex;
+      gap: .25rem;
+      flex-wrap: wrap;
+      flex-shrink: 0;
+    }
+
+    .tag-badge {
+      font-size: .65rem;
+      font-weight: 600;
+      background: #eef2ff;
+      color: #3b4cb8;
+      border-radius: 4px;
+      padding: .12rem .4rem;
+      text-transform: lowercase;
+    }
+
     .warning {
       margin-top: 2rem;
       padding: .75rem 1rem;
@@ -142,6 +159,11 @@
               <span class="user-name">{{ user.name }}</span>
               <span class="user-email">{{ user.email }}</span>
             </span>
+            {% if user.tags %}
+            <span class="user-tags" aria-hidden="true">
+              {% for tag in user.tags %}<span class="tag-badge">{{ tag }}</span>{% endfor %}
+            </span>
+            {% endif %}
             <span class="recent-badge">recent</span>
           </button>
         </form>
@@ -174,6 +196,11 @@
               <span class="user-name">{{ user.name }}</span>
               <span class="user-email">{{ user.email }}</span>
             </span>
+            {% if user.tags %}
+            <span class="user-tags" aria-hidden="true">
+              {% for tag in user.tags %}<span class="tag-badge">{{ tag }}</span>{% endfor %}
+            </span>
+            {% endif %}
           </button>
         </form>
       </li>

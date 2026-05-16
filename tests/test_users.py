@@ -36,6 +36,14 @@ class TestUser:
         user = User(sub="x", name="X", email="x@x.com")
         assert user.extra == {}
 
+    def test_tags_default_to_empty_list(self):
+        user = User(sub="x", name="X", email="x@x.com")
+        assert user.tags == []
+
+    def test_tags_not_in_claims(self):
+        user = User(sub="x", name="X", email="x@x.com", tags=["qa", "csv"])
+        assert "tags" not in user.claims()
+
 
 # ---------------------------------------------------------------------------
 # UserSource abstract interface
@@ -164,6 +172,47 @@ class TestCSVUserSource:
         assert users[0].sub == "alice"
         assert users[0].name == "Alice"
 
+    def test_parses_tags_column(self, tmp_path):
+        csv_file = tmp_path / "users.csv"
+        csv_file.write_text(
+            "sub,name,email,tags\nalice,Alice,alice@example.com,qa;legacy\n"
+        )
+        source = CSVUserSource(str(csv_file))
+        users = source.get_users()
+        assert users[0].tags == ["qa", "legacy", "csv"]
+
+    def test_auto_tags_csv_when_tags_column_missing(self, tmp_path):
+        csv_file = tmp_path / "users.csv"
+        csv_file.write_text("sub,name,email\nalice,Alice,alice@example.com\n")
+        source = CSVUserSource(str(csv_file))
+        users = source.get_users()
+        assert users[0].tags == ["csv"]
+
+    def test_auto_tags_csv_when_tags_value_blank(self, tmp_path):
+        csv_file = tmp_path / "users.csv"
+        csv_file.write_text("sub,name,email,tags\nalice,Alice,alice@example.com,\n")
+        source = CSVUserSource(str(csv_file))
+        users = source.get_users()
+        assert users[0].tags == ["csv"]
+
+    def test_tags_column_not_in_extra(self, tmp_path):
+        csv_file = tmp_path / "users.csv"
+        csv_file.write_text(
+            "sub,name,email,tags\nalice,Alice,alice@example.com,qa\n"
+        )
+        source = CSVUserSource(str(csv_file))
+        users = source.get_users()
+        assert "tags" not in users[0].extra
+
+    def test_does_not_duplicate_csv_auto_tag(self, tmp_path):
+        csv_file = tmp_path / "users.csv"
+        csv_file.write_text(
+            "sub,name,email,tags\nalice,Alice,alice@example.com,csv;qa\n"
+        )
+        source = CSVUserSource(str(csv_file))
+        users = source.get_users()
+        assert users[0].tags == ["csv", "qa"]
+
 
 # ---------------------------------------------------------------------------
 # HTTPUserSource
@@ -230,6 +279,54 @@ class TestHTTPUserSource:
         monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen(b"[1, 2, 3]"))
         assert HTTPUserSource("http://stub/users").get_users() == []
 
+    def test_parses_tags_list(self, monkeypatch):
+        body = json.dumps(
+            {"users": [{"sub": "alice", "name": "Alice", "email": "a@x.com", "tags": ["qa", "bridge"]}]}
+        ).encode()
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen(body))
+        users = HTTPUserSource("http://stub/users").get_users()
+        assert users[0].tags == ["qa", "bridge", "http"]
+
+    def test_parses_tags_semicolon_string(self, monkeypatch):
+        body = json.dumps(
+            {"users": [{"sub": "alice", "name": "Alice", "email": "a@x.com", "tags": "qa;bridge"}]}
+        ).encode()
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen(body))
+        users = HTTPUserSource("http://stub/users").get_users()
+        assert users[0].tags == ["qa", "bridge", "http"]
+
+    def test_auto_tags_http_when_tags_missing(self, monkeypatch):
+        body = json.dumps(
+            {"users": [{"sub": "alice", "name": "Alice", "email": "a@x.com"}]}
+        ).encode()
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen(body))
+        users = HTTPUserSource("http://stub/users").get_users()
+        assert users[0].tags == ["http"]
+
+    def test_auto_tags_http_when_tags_wrong_type(self, monkeypatch):
+        body = json.dumps(
+            {"users": [{"sub": "alice", "name": "Alice", "email": "a@x.com", "tags": 42}]}
+        ).encode()
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen(body))
+        users = HTTPUserSource("http://stub/users").get_users()
+        assert users[0].tags == ["http"]
+
+    def test_tags_key_not_in_extra(self, monkeypatch):
+        body = json.dumps(
+            {"users": [{"sub": "alice", "name": "Alice", "email": "a@x.com", "tags": ["qa"]}]}
+        ).encode()
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen(body))
+        users = HTTPUserSource("http://stub/users").get_users()
+        assert "tags" not in users[0].extra
+
+    def test_does_not_duplicate_http_auto_tag(self, monkeypatch):
+        body = json.dumps(
+            {"users": [{"sub": "alice", "name": "Alice", "email": "a@x.com", "tags": ["http", "qa"]}]}
+        ).encode()
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen(body))
+        users = HTTPUserSource("http://stub/users").get_users()
+        assert users[0].tags == ["http", "qa"]
+
 
 # ---------------------------------------------------------------------------
 # CompositeUserSource
@@ -262,3 +359,25 @@ class TestCompositeUserSource:
 
     def test_empty_sources(self):
         assert CompositeUserSource().get_users() == []
+
+    def test_unions_tags_on_duplicate_sub(self):
+        a = _StaticSource([User("alice", "Old Alice", "old@x.com", tags=["qa", "csv"])])
+        b = _StaticSource([User("alice", "New Alice", "new@x.com", tags=["bridge", "http"])])
+        users = CompositeUserSource(a, b).get_users()
+        assert len(users) == 1
+        # later source still wins on name/email
+        assert users[0].name == "New Alice"
+        assert users[0].email == "new@x.com"
+        # tags are unioned, earlier-source tags first
+        assert users[0].tags == ["qa", "csv", "bridge", "http"]
+
+    def test_union_dedupes_overlapping_tags(self):
+        a = _StaticSource([User("alice", "A", "a@x.com", tags=["qa", "csv"])])
+        b = _StaticSource([User("alice", "A", "a@x.com", tags=["qa", "http"])])
+        users = CompositeUserSource(a, b).get_users()
+        assert users[0].tags == ["qa", "csv", "http"]
+
+    def test_single_source_tags_unchanged(self):
+        a = _StaticSource([User("alice", "A", "a@x.com", tags=["qa", "csv"])])
+        users = CompositeUserSource(a).get_users()
+        assert users[0].tags == ["qa", "csv"]
