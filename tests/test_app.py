@@ -137,14 +137,17 @@ class TestAuthorizeGet:
         assert 'data-testid="user-bob"' in html
 
     def test_recent_users_section_shown_after_login(self, client):
-        # First login as alice to create a recent entry
+        # First login as alice to create a recent entry; log out so SSO
+        # doesn't auto-redirect past the tile screen we want to inspect.
         _do_login(client, "alice")
+        client.post("/logout")
         resp = client.get(_authorize_url())
         html = resp.data.decode()
         assert 'data-testid="recent-users"' in html
 
     def test_alice_appears_in_recent_after_login(self, client):
         _do_login(client, "alice")
+        client.post("/logout")
         resp = client.get(_authorize_url())
         html = resp.data.decode()
         # recent-users section must contain alice's button
@@ -354,7 +357,8 @@ def _assert_token_cors(resp, expected_origin):
     assert resp.headers.get("Access-Control-Allow-Methods") == TOKEN_ALLOW_METHODS
     assert resp.headers.get("Access-Control-Allow-Headers") == TOKEN_ALLOW_HEADERS
     assert resp.headers.get("Access-Control-Allow-Credentials") == "true"
-    assert resp.headers.get("Vary") == "Origin"
+    vary_values = {v.strip() for v in resp.headers.get("Vary", "").split(",")}
+    assert "Origin" in vary_values
 
 
 def _assert_discovery_cors(resp):
@@ -456,6 +460,138 @@ class TestHomePage:
         html = resp.data.decode()
         assert 'data-testid="from-notice"' in html
         assert "http://localhost/unknown" in html
+
+    def test_shows_not_signed_in_by_default(self, client):
+        html = client.get("/").data.decode()
+        assert 'data-testid="login-status-signed-out"' in html
+        assert "Not signed in" in html
+
+    def test_shows_signed_in_after_login(self, client):
+        _do_login(client, "alice")
+        html = client.get("/").data.decode()
+        assert 'data-testid="login-status-signed-in"' in html
+        assert "Alice Smith" in html
+        assert 'data-testid="logout-button"' in html
+
+
+# ---------------------------------------------------------------------------
+# Persistent login session + logout
+# ---------------------------------------------------------------------------
+
+class TestLoginSession:
+    def test_post_authorize_sets_logged_in_sub(self, client):
+        _do_login(client, "alice")
+        with client.session_transaction() as s:
+            assert s.get("logged_in_sub") == "alice"
+
+    def test_session_is_marked_permanent(self, client):
+        _do_login(client, "alice")
+        with client.session_transaction() as s:
+            assert s.permanent is True
+
+
+class TestLogout:
+    def test_get_logout_clears_login_and_redirects_home(self, client):
+        _do_login(client, "alice")
+        resp = client.get("/logout", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith("/")
+        with client.session_transaction() as s:
+            assert "logged_in_sub" not in s
+
+    def test_post_logout_clears_login_and_redirects_home(self, client):
+        _do_login(client, "alice")
+        resp = client.post("/logout", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith("/")
+        with client.session_transaction() as s:
+            assert "logged_in_sub" not in s
+
+    def test_logout_preserves_recent_users(self, client):
+        _do_login(client, "alice")
+        client.post("/logout")
+        with client.session_transaction() as s:
+            assert "alice" in s.get("recent_users", [])
+
+    def test_home_shows_signed_out_after_logout(self, client):
+        _do_login(client, "alice")
+        client.post("/logout")
+        html = client.get("/").data.decode()
+        assert 'data-testid="login-status-signed-out"' in html
+
+    def test_logout_when_not_logged_in_is_noop_redirect(self, client):
+        resp = client.get("/logout", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith("/")
+
+
+# ---------------------------------------------------------------------------
+# Single sign-on: GET /authorize auto-redirects when already logged in
+# ---------------------------------------------------------------------------
+
+class TestSSO:
+    def test_get_authorize_auto_redirects_when_logged_in(self, client):
+        _do_login(client, "alice")
+        resp = client.get(_authorize_url(), follow_redirects=False)
+        assert resp.status_code == 302
+        location = resp.headers["Location"]
+        assert location.startswith(_AUTHORIZE_PARAMS["redirect_uri"])
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(location).query)
+        assert "code" in qs
+        assert qs.get("state", [None])[0] == _AUTHORIZE_PARAMS["state"]
+
+    def test_get_authorize_issues_fresh_code_each_time(self, client):
+        _do_login(client, "alice")
+        codes = set()
+        for _ in range(2):
+            resp = client.get(_authorize_url(), follow_redirects=False)
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(resp.headers["Location"]).query)
+            codes.add(qs["code"][0])
+        assert len(codes) == 2
+
+    def test_sso_code_redeems_at_token_endpoint(self, client):
+        _do_login(client, "alice")
+        resp = client.get(_authorize_url(), follow_redirects=False)
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(resp.headers["Location"]).query)
+        code = qs["code"][0]
+        token_resp = client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": _AUTHORIZE_PARAMS["redirect_uri"],
+                "client_id": _AUTHORIZE_PARAMS["client_id"],
+            },
+        )
+        assert token_resp.status_code == 200
+        payload = _decode_jwt_payload(token_resp.get_json()["id_token"])
+        assert payload["sub"] == "alice"
+
+    def test_no_sso_without_redirect_uri(self, client):
+        _do_login(client, "alice")
+        params = {k: v for k, v in _AUTHORIZE_PARAMS.items() if k != "redirect_uri"}
+        resp = client.get("/authorize?" + urllib.parse.urlencode(params))
+        assert resp.status_code == 200
+        # Tile page rendered, not a redirect
+        assert b"Alice Smith" in resp.data
+
+    def test_no_sso_when_not_logged_in(self, client):
+        # Tile page should render normally for a fresh client
+        resp = client.get(_authorize_url())
+        assert resp.status_code == 200
+        assert b"Alice Smith" in resp.data
+
+    def test_stale_logged_in_sub_falls_through_to_tiles(self, client, tmp_path):
+        _do_login(client, "alice")
+        # Rewrite CSV without alice — her session sub no longer maps to a user
+        new_csv = tmp_path / "users.csv"
+        new_csv.write_text("sub,name,email\nbob,Bob Jones,bob@example.com\n")
+        os.environ["USERS_CSV"] = str(new_csv)
+        resp = client.get(_authorize_url())
+        assert resp.status_code == 200
+        assert b"Bob Jones" in resp.data
+        with client.session_transaction() as s:
+            assert "logged_in_sub" not in s
 
 
 # ---------------------------------------------------------------------------

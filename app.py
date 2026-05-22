@@ -17,6 +17,7 @@ import os
 import secrets
 import time
 import urllib.parse
+from datetime import timedelta
 from functools import lru_cache
 
 from joserfc import jwt
@@ -42,6 +43,11 @@ app = Flask(__name__)
 # Honor X-Forwarded-Proto/Host from a single upstream proxy that terminates TLS.
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 app.secret_key = os.environ.get("SECRET_KEY", "insecure-testing-secret")
+# Persistent login cookie survives browser restarts
+app.permanent_session_lifetime = timedelta(days=30)
+
+# Session key under which the currently-logged-in user's sub is stored
+LOGIN_SESSION_KEY = "logged_in_sub"
 
 # ---------------------------------------------------------------------------
 # In-memory stores (intentionally simple — this is a testing tool)
@@ -166,6 +172,30 @@ def _jwks_for_key() -> dict:
     return jwk
 
 
+def _issue_auth_code(sub: str, client_id: str, redirect_uri: str, state: str, nonce: str, scope: str) -> str | None:
+    """Mint a one-time code and return the relying-party redirect URL, or None if redirect_uri is invalid."""
+    parsed = urllib.parse.urlparse(redirect_uri)
+    if parsed.scheme not in ("http", "https"):
+        return None
+
+    _purge_expired()
+    code = secrets.token_urlsafe(24)
+    _auth_codes[code] = {
+        "sub": sub,
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "nonce": nonce or None,
+        "scope": scope,
+        "exp": _now() + AUTH_CODE_TTL,
+    }
+
+    sep = "&" if "?" in redirect_uri else "?"
+    location = f"{redirect_uri}{sep}code={code}"
+    if state:
+        location += f"&state={state}"
+    return location
+
+
 # ---------------------------------------------------------------------------
 # OpenID Connect discovery & JWKS
 # ---------------------------------------------------------------------------
@@ -232,6 +262,27 @@ def authorize():
         )
 
     source = _get_user_source()
+
+    # Single sign-on: if a user is already logged in and the request carries
+    # a redirect_uri, skip the tile screen and issue a code immediately.
+    logged_in_sub = session.get(LOGIN_SESSION_KEY)
+    redirect_uri = request.args.get("redirect_uri", "")
+    if logged_in_sub and redirect_uri:
+        if source.get_user(logged_in_sub) is not None:
+            location = _issue_auth_code(
+                logged_in_sub,
+                request.args.get("client_id", ""),
+                redirect_uri,
+                request.args.get("state", ""),
+                request.args.get("nonce", ""),
+                request.args.get("scope", "openid"),
+            )
+            if location is None:
+                return jsonify({"error": "invalid_redirect_uri"}), 400
+            return redirect(location)
+        # Stale session — referenced user no longer exists
+        session.pop(LOGIN_SESSION_KEY, None)
+
     all_users = source.get_users()
 
     # Pull recently-selected subs from the session and move them to the top
@@ -275,28 +326,13 @@ def authorize_submit():
     recent.insert(0, sub)
     session["recent_users"] = recent[:RECENT_USERS_LIMIT]
 
-    # Issue an authorization code
-    _purge_expired()
-    code = secrets.token_urlsafe(24)
-    _auth_codes[code] = {
-        "sub": sub,
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "nonce": nonce or None,
-        "scope": scope,
-        "exp": _now() + AUTH_CODE_TTL,
-    }
+    # Establish a persistent login so future visits skip the tile screen
+    session.permanent = True
+    session[LOGIN_SESSION_KEY] = sub
 
-    # Validate redirect_uri has an acceptable scheme before redirecting.
-    # (This is an intentionally open provider so we only enforce basic URL sanity.)
-    parsed = urllib.parse.urlparse(redirect_uri)
-    if parsed.scheme not in ("http", "https"):
+    location = _issue_auth_code(sub, client_id, redirect_uri, state, nonce, scope)
+    if location is None:
         return jsonify({"error": "invalid_redirect_uri"}), 400
-
-    sep = "&" if "?" in redirect_uri else "?"
-    location = f"{redirect_uri}{sep}code={code}"
-    if state:
-        location += f"&state={state}"
     return redirect(location)
 
 
@@ -421,7 +457,19 @@ def userinfo():
 @app.get("/")
 def home():
     from_url = request.args.get("from_url")
-    return render_template("home.html", from_url=from_url)
+    sub = session.get(LOGIN_SESSION_KEY)
+    current_user = _get_user_source().get_user(sub) if sub else None
+    return render_template("home.html", from_url=from_url, current_user=current_user)
+
+
+# ---------------------------------------------------------------------------
+# Logout
+# ---------------------------------------------------------------------------
+
+@app.route("/logout", methods=["GET", "POST"])
+def logout():
+    session.pop(LOGIN_SESSION_KEY, None)
+    return redirect(url_for("home"))
 
 
 # ---------------------------------------------------------------------------

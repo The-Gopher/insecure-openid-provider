@@ -91,12 +91,69 @@
       font-size: .82rem;
       color: #555;
     }
+
+    .login-status {
+      margin-bottom: 1.5rem;
+      padding: .75rem 1rem;
+      border-radius: 4px;
+      font-size: .9rem;
+      display: flex;
+      align-items: center;
+      gap: .75rem;
+      flex-wrap: wrap;
+    }
+
+    .login-status.signed-in {
+      background: #e8f5e9;
+      border-left: 4px solid #43a047;
+      color: #1b3a1d;
+    }
+
+    .login-status.signed-out {
+      background: #f0f0f0;
+      border-left: 4px solid #999;
+      color: #444;
+    }
+
+    .login-status .status-text { flex: 1; }
+    .login-status form { margin: 0; }
+
+    .login-status button,
+    .login-status a.button {
+      font: inherit;
+      cursor: pointer;
+      background: #fff;
+      border: 1px solid #bbb;
+      border-radius: 4px;
+      padding: .35rem .75rem;
+      color: #333;
+      text-decoration: none;
+    }
+
+    .login-status button:hover,
+    .login-status a.button:hover { background: #f5f5f5; }
   </style>
 </head>
 <body>
   <main class="card" role="main">
     <h1>Insecure OpenID Provider</h1>
     <p class="subtitle">A minimal OpenID Connect identity provider for automated testing.</p>
+
+    {% if current_user %}
+    <div class="login-status signed-in" data-testid="login-status-signed-in">
+      <span class="status-text">
+        Signed in as <strong>{{ current_user.name }}</strong>
+        (<code>{{ current_user.sub }}</code>)
+      </span>
+      <form method="post" action="/logout">
+        <button type="submit" data-testid="logout-button">Log out</button>
+      </form>
+    </div>
+    {% else %}
+    <div class="login-status signed-out" data-testid="login-status-signed-out">
+      <span class="status-text">Not signed in.</span>
+    </div>
+    {% endif %}
 
     {% if from_url %}
     <div class="from-notice" role="alert" data-testid="from-notice">
