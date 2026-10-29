@@ -10,7 +10,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 # Copy application source
-COPY app.py session_store.py ./
+COPY app.py sqlite_store.py ./
 COPY users/ users/
 COPY templates/ templates/
 
