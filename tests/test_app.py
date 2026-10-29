@@ -64,11 +64,18 @@ def _authorize_url(extra=None):
     return "/authorize?" + urllib.parse.urlencode(params)
 
 
-def _do_login(client, sub="alice"):
+# Base64 state, as auth0-spa-js sends it, plus characters that need escaping.
+_RESERVED_STATE = "ZGFsdHd5+VmRvXw/a==&x y"
+
+
+def _do_login(client, sub="alice", state=None):
     """Complete the authorize flow for *sub* and return (code, state)."""
+    data = {**_AUTHORIZE_PARAMS, "sub": sub}
+    if state is not None:
+        data["state"] = state
     resp = client.post(
         "/authorize",
-        data={**_AUTHORIZE_PARAMS, "sub": sub},
+        data=data,
         follow_redirects=False,
     )
     assert resp.status_code == 302
@@ -166,6 +173,32 @@ class TestAuthorizePost:
         code, state = _do_login(client, "alice")
         assert code
         assert state == "mystate"
+
+    def test_state_with_reserved_characters_round_trips(self, client):
+        _, state = _do_login(client, "alice", state=_RESERVED_STATE)
+        assert state == _RESERVED_STATE
+
+    def test_redirect_uri_with_query_keeps_it(self, client):
+        resp = client.post(
+            "/authorize",
+            data={**_AUTHORIZE_PARAMS, "sub": "alice", "redirect_uri": "http://localhost:9999/callback?x=1"},
+            follow_redirects=False,
+        )
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(resp.headers["Location"]).query)
+        assert qs["x"] == ["1"]
+        assert qs["state"] == ["mystate"]
+
+    def test_redirect_uri_with_fragment_puts_code_in_query(self, client):
+        resp = client.post(
+            "/authorize",
+            data={**_AUTHORIZE_PARAMS, "sub": "alice", "redirect_uri": "http://localhost:9999/callback#frag"},
+            follow_redirects=False,
+        )
+        parsed = urllib.parse.urlparse(resp.headers["Location"])
+        assert parsed.fragment == "frag"
+        qs = urllib.parse.parse_qs(parsed.query)
+        assert qs["code"]
+        assert qs["state"] == ["mystate"]
 
     def test_missing_sub_returns_400(self, client):
         resp = client.post("/authorize", data={**_AUTHORIZE_PARAMS})
@@ -539,6 +572,13 @@ class TestSSO:
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(location).query)
         assert "code" in qs
         assert qs.get("state", [None])[0] == _AUTHORIZE_PARAMS["state"]
+
+    def test_get_authorize_auto_redirect_encodes_state(self, client):
+        _do_login(client, "alice")
+        resp = client.get(_authorize_url({"state": _RESERVED_STATE}), follow_redirects=False)
+        assert resp.status_code == 302
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(resp.headers["Location"]).query)
+        assert qs["state"] == [_RESERVED_STATE]
 
     def test_get_authorize_issues_fresh_code_each_time(self, client):
         _do_login(client, "alice")
