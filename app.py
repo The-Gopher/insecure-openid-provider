@@ -56,6 +56,9 @@ LOGIN_SESSION_KEY = "logged_in_sub"
 _auth_codes: dict = {}
 # Kept for backward-compatibility with test fixtures; access tokens are now self-contained JWTs
 _access_tokens: dict = {}
+# refresh_token -> {sub, client_id, scope}. Issued when the scope asks for
+# offline_access; never expires, and is lost when the process restarts.
+_refresh_tokens: dict = {}
 
 # How many recently-selected users to show at the top of the login list
 RECENT_USERS_LIMIT = 5
@@ -172,10 +175,21 @@ def _jwks_for_key() -> dict:
     return jwk
 
 
+def _is_allowed_redirect_uri(redirect_uri: str) -> bool:
+    """Accept web redirects and native-app private-use schemes.
+
+    Native apps (e.g. react-native-auth0 on Android) receive the code on a
+    reverse-DNS custom scheme such as ``com.example.app.auth0://...``. RFC 8252
+    section 7.1 requires such schemes to contain a period, which also keeps out
+    ``javascript:``, ``data:`` and the like.
+    """
+    scheme = urllib.parse.urlsplit(redirect_uri).scheme.lower()
+    return scheme in ("http", "https") or "." in scheme
+
+
 def _issue_auth_code(sub: str, client_id: str, redirect_uri: str, state: str, nonce: str, scope: str) -> str | None:
     """Mint a one-time code and return the relying-party redirect URL, or None if redirect_uri is invalid."""
-    parsed = urllib.parse.urlparse(redirect_uri)
-    if parsed.scheme not in ("http", "https"):
+    if not _is_allowed_redirect_uri(redirect_uri):
         return None
 
     _purge_expired()
@@ -221,7 +235,8 @@ def openid_configuration():
                 "response_types_supported": ["code"],
                 "subject_types_supported": ["public"],
                 "id_token_signing_alg_values_supported": ["RS256"],
-                "scopes_supported": ["openid", "profile", "email"],
+                "scopes_supported": ["openid", "profile", "email", "offline_access"],
+                "grant_types_supported": ["authorization_code", "refresh_token"],
                 "token_endpoint_auth_methods_supported": ["none", "client_secret_post"],
                 "claims_supported": [
                     "sub",
@@ -350,13 +365,19 @@ def token():
     _purge_expired()
 
     if request.method == "POST":
+        # Browser clients post a form; Auth0's native SDKs post JSON.
+        params = request.get_json(silent=True) if request.is_json else None
+        if not isinstance(params, dict):
+            params = request.form
 
-        grant_type = request.form.get("grant_type", "")
+        grant_type = params.get("grant_type", "")
+        if grant_type == "refresh_token":
+            return _cors_token_response(_refresh_token_grant(params))
         if grant_type != "authorization_code":
             return jsonify({"error": "unsupported_grant_type"}), 400
 
-        code = request.form.get("code", "")
-        redirect_uri = request.form.get("redirect_uri", "")
+        code = params.get("code", "")
+        redirect_uri = params.get("redirect_uri", "")
 
         code_data = _auth_codes.pop(code, None)
         if code_data is None:
@@ -394,18 +415,59 @@ def token():
         )
         access_token = _make_access_token(sub, scope)
 
-        response = jsonify(
-            {
-                "access_token": access_token,
-                "token_type": "Bearer",
-                "expires_in": ACCESS_TOKEN_TTL,
-                "id_token": id_token,
+        body = {
+            "access_token": access_token,
+            "token_type": "Bearer",
+            "expires_in": ACCESS_TOKEN_TTL,
+            "id_token": id_token,
+            "scope": scope,
+        }
+        if "offline_access" in scope.split():
+            refresh_token = secrets.token_urlsafe(32)
+            _refresh_tokens[refresh_token] = {
+                "sub": sub,
+                "client_id": code_data["client_id"],
                 "scope": scope,
             }
-        )
+            body["refresh_token"] = refresh_token
+        response = jsonify(body)
     else:
         response = app.make_default_options_response()
 
+    return _cors_token_response(response)
+
+
+def _refresh_token_grant(params):
+    """Exchange a refresh token for fresh access and id tokens.
+
+    Like Auth0 without rotation, the response carries no new refresh token: the
+    client keeps using the one it has.
+    """
+    token_data = _refresh_tokens.get(params.get("refresh_token", ""))
+    if token_data is None:
+        return jsonify({"error": "invalid_grant"}), 400
+
+    sub = token_data["sub"]
+    scope = token_data["scope"]
+    user = _get_user_source().get_user(sub)
+    if user is None:
+        return jsonify({"error": "invalid_grant", "error_description": "unknown user"}), 400
+    extra = user.claims()
+    extra.pop("sub", None)
+
+    return jsonify(
+        {
+            "access_token": _make_access_token(sub, scope),
+            "token_type": "Bearer",
+            "expires_in": ACCESS_TOKEN_TTL,
+            "id_token": _make_id_token(sub, token_data["client_id"], None, extra),
+            "scope": scope,
+        }
+    )
+
+
+def _cors_token_response(response):
+    response = app.make_response(response)
     # Allow CORS preflight requests to the token endpoint, which is commonly used in testing scenarios.
     headers = response.headers
 
@@ -473,6 +535,21 @@ def home():
 @app.route("/logout", methods=["GET", "POST"])
 def logout():
     session.pop(LOGIN_SESSION_KEY, None)
+    return redirect(url_for("home"))
+
+
+@app.get("/v2/logout")
+def auth0_logout():
+    """Auth0's logout path, which its SDKs call with a returnTo URL.
+
+    Native apps wait for the browser to land on returnTo (their custom-scheme
+    callback); without this route the request fell through to the catch-all and
+    stopped on the home page, so the app's logout never resolved.
+    """
+    session.pop(LOGIN_SESSION_KEY, None)
+    return_to = request.args.get("returnTo", "")
+    if return_to and _is_allowed_redirect_uri(return_to):
+        return redirect(return_to)
     return redirect(url_for("home"))
 
 
