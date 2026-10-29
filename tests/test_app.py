@@ -188,6 +188,18 @@ class TestAuthorizePost:
         assert qs["x"] == ["1"]
         assert qs["state"] == ["mystate"]
 
+    def test_redirect_uri_with_fragment_puts_code_in_query(self, client):
+        resp = client.post(
+            "/authorize",
+            data={**_AUTHORIZE_PARAMS, "sub": "alice", "redirect_uri": "http://localhost:9999/callback#frag"},
+            follow_redirects=False,
+        )
+        parsed = urllib.parse.urlparse(resp.headers["Location"])
+        assert parsed.fragment == "frag"
+        qs = urllib.parse.parse_qs(parsed.query)
+        assert qs["code"]
+        assert qs["state"] == ["mystate"]
+
     def test_missing_sub_returns_400(self, client):
         resp = client.post("/authorize", data={**_AUTHORIZE_PARAMS})
         assert resp.status_code == 400

@@ -195,8 +195,9 @@ def _issue_auth_code(sub: str, client_id: str, redirect_uri: str, state: str, no
     params = {"code": code}
     if state:
         params["state"] = state
-    sep = "&" if "?" in redirect_uri else "?"
-    return f"{redirect_uri}{sep}{urllib.parse.urlencode(params)}"
+    parts = urllib.parse.urlsplit(redirect_uri)
+    query = urllib.parse.parse_qsl(parts.query, keep_blank_values=True) + list(params.items())
+    return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(query)))
 
 
 # ---------------------------------------------------------------------------
