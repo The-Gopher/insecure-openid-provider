@@ -189,11 +189,14 @@ def _issue_auth_code(sub: str, client_id: str, redirect_uri: str, state: str, no
         "exp": _now() + AUTH_CODE_TTL,
     }
 
-    sep = "&" if "?" in redirect_uri else "?"
-    location = f"{redirect_uri}{sep}code={code}"
+    # Encode the query: `state` is opaque to us and often base64, so it can carry
+    # '+', '/' and '='. Appended raw, a '+' reads back as a space on the client
+    # and the relying party rejects the callback as a state mismatch.
+    params = {"code": code}
     if state:
-        location += f"&state={state}"
-    return location
+        params["state"] = state
+    sep = "&" if "?" in redirect_uri else "?"
+    return f"{redirect_uri}{sep}{urllib.parse.urlencode(params)}"
 
 
 # ---------------------------------------------------------------------------
