@@ -32,6 +32,7 @@ def application(tmp_path):
     oidc_app.app.config["SECRET_KEY"] = "test-secret"
     oidc_app._auth_codes.clear()
     oidc_app._access_tokens.clear()
+    oidc_app._refresh_tokens.clear()
     oidc_app.app.config["ENV_USERS_CSV"] = str(csv_file)
 
     import os
@@ -337,6 +338,172 @@ class TestToken:
         token = jose_jwt.decode(access_token, pub_key)
         assert token.claims["sub"] == "alice"
         assert "scope" in token.claims
+
+
+# ---------------------------------------------------------------------------
+# Native apps (Auth0 SDKs): custom-scheme redirects, JSON token requests,
+# refresh tokens and /v2/logout
+# ---------------------------------------------------------------------------
+
+# What react-native-auth0 sends on Android: <applicationId>.auth0://<domain>/android/<applicationId>/callback
+_NATIVE_REDIRECT_URI = "com.example.app.auth0://oidc.example/android/com.example.app/callback"
+
+
+def _native_login(client, scope="openid profile email offline_access"):
+    resp = client.post(
+        "/authorize",
+        data={**_AUTHORIZE_PARAMS, "sub": "alice", "redirect_uri": _NATIVE_REDIRECT_URI, "scope": scope},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    qs = urllib.parse.parse_qs(urllib.parse.urlsplit(resp.headers["Location"]).query)
+    return qs["code"][0]
+
+
+def _native_token(client, code):
+    """Exchange *code* the way the Auth0 Android SDK does: a JSON body with a PKCE verifier."""
+    return client.post(
+        "/oauth/token",
+        json={
+            "grant_type": "authorization_code",
+            "client_id": _AUTHORIZE_PARAMS["client_id"],
+            "code": code,
+            "code_verifier": "ignored-by-this-provider",
+            "redirect_uri": _NATIVE_REDIRECT_URI,
+        },
+    )
+
+
+class TestNativeAppRedirect:
+    def test_custom_scheme_redirect_receives_code_and_state(self, client):
+        resp = client.post(
+            "/authorize",
+            data={**_AUTHORIZE_PARAMS, "sub": "alice", "redirect_uri": _NATIVE_REDIRECT_URI},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        location = urllib.parse.urlsplit(resp.headers["Location"])
+        assert f"{location.scheme}://{location.netloc}{location.path}" == _NATIVE_REDIRECT_URI
+        qs = urllib.parse.parse_qs(location.query)
+        assert qs["code"]
+        assert qs["state"] == ["mystate"]
+
+    def test_sso_redirects_to_custom_scheme(self, client):
+        _do_login(client, "alice")
+        resp = client.get(_authorize_url({"redirect_uri": _NATIVE_REDIRECT_URI}), follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["Location"].startswith(_NATIVE_REDIRECT_URI + "?")
+
+    @pytest.mark.parametrize(
+        "redirect_uri",
+        ["javascript:alert(1)", "data:text/html,hi", "myapp://callback", "file:///etc/passwd"],
+    )
+    def test_rejects_schemes_that_are_neither_web_nor_reverse_dns(self, client, redirect_uri):
+        resp = client.post(
+            "/authorize",
+            data={**_AUTHORIZE_PARAMS, "sub": "alice", "redirect_uri": redirect_uri},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 400
+        assert resp.get_json()["error"] == "invalid_redirect_uri"
+
+
+class TestTokenJsonBody:
+    def test_json_code_exchange_returns_tokens(self, client):
+        resp = _native_token(client, _native_login(client))
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["token_type"] == "Bearer"
+        payload = _decode_jwt_payload(data["id_token"])
+        assert payload["sub"] == "alice"
+        assert payload["aud"] == _AUTHORIZE_PARAMS["client_id"]
+        assert payload["nonce"] == "mynonce"
+
+    def test_json_redirect_uri_mismatch_returns_400(self, client):
+        code = _native_login(client)
+        resp = client.post(
+            "/oauth/token",
+            json={"grant_type": "authorization_code", "code": code, "redirect_uri": "com.other.app://cb"},
+        )
+        assert resp.status_code == 400
+
+    def test_json_unsupported_grant_type(self, client):
+        resp = client.post("/oauth/token", json={"grant_type": "client_credentials"})
+        assert resp.status_code == 400
+
+
+class TestRefreshToken:
+    def test_offline_access_issues_refresh_token(self, client):
+        data = _native_token(client, _native_login(client)).get_json()
+        assert data["refresh_token"]
+
+    def test_no_refresh_token_without_offline_access(self, client):
+        data = _native_token(client, _native_login(client, scope="openid profile email")).get_json()
+        assert "refresh_token" not in data
+
+    def test_refresh_returns_new_tokens_for_same_user(self, client):
+        refresh_token = _native_token(client, _native_login(client)).get_json()["refresh_token"]
+        resp = client.post(
+            "/oauth/token",
+            json={"grant_type": "refresh_token", "client_id": "test-client", "refresh_token": refresh_token},
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "refresh_token" not in data
+        id_claims = _decode_jwt_payload(data["id_token"])
+        assert id_claims["sub"] == "alice"
+        assert id_claims["aud"] == "test-client"
+        assert id_claims["email"] == "alice@example.com"
+        assert _decode_jwt_payload(data["access_token"])["sub"] == "alice"
+
+    def test_refresh_token_is_reusable(self, client):
+        refresh_token = _native_token(client, _native_login(client)).get_json()["refresh_token"]
+        params = {"grant_type": "refresh_token", "refresh_token": refresh_token}
+        assert client.post("/oauth/token", data=params).status_code == 200
+        assert client.post("/oauth/token", data=params).status_code == 200
+
+    def test_unknown_refresh_token_returns_400(self, client):
+        resp = client.post("/oauth/token", json={"grant_type": "refresh_token", "refresh_token": "nope"})
+        assert resp.status_code == 400
+        assert resp.get_json()["error"] == "invalid_grant"
+
+    def test_refresh_response_has_cors_headers(self, client):
+        refresh_token = _native_token(client, _native_login(client)).get_json()["refresh_token"]
+        resp = client.post(
+            "/oauth/token",
+            json={"grant_type": "refresh_token", "refresh_token": refresh_token},
+            headers={"Origin": "https://app.example"},
+        )
+        assert resp.headers["Access-Control-Allow-Origin"] == "https://app.example"
+
+    def test_discovery_advertises_refresh_grant(self, client):
+        data = client.get("/.well-known/openid-configuration").get_json()
+        assert "refresh_token" in data["grant_types_supported"]
+        assert "offline_access" in data["scopes_supported"]
+
+
+class TestAuth0Logout:
+    def test_clears_login_and_redirects_to_return_to(self, client):
+        _do_login(client, "alice")
+        return_to = "com.example.app.auth0://oidc.example/android/com.example.app/callback"
+        resp = client.get(
+            "/v2/logout?" + urllib.parse.urlencode({"returnTo": return_to, "client_id": "test-client"}),
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        assert resp.headers["Location"] == return_to
+        with client.session_transaction() as s:
+            assert "logged_in_sub" not in s
+
+    def test_without_return_to_redirects_home(self, client):
+        resp = client.get("/v2/logout", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith("/")
+
+    def test_disallowed_return_to_redirects_home(self, client):
+        resp = client.get("/v2/logout?returnTo=javascript:alert(1)", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith("/")
 
 
 # ---------------------------------------------------------------------------
