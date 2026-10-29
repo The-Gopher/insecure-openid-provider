@@ -9,6 +9,7 @@ Usage::
     gunicorn app:app              # uses users.csv in the current directory
     USERS_CSV=my.csv gunicorn app:app
     ISSUER=https://auth.example gunicorn app:app
+    SESSION_DB=/tmp/sessions.db gunicorn app:app   # default /data/sessions.db
 """
 
 import json
@@ -34,6 +35,8 @@ from flask import (
 )
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+from session_store import SQLiteSessionInterface
+
 from users.base import UserSource
 from users.composite_source import CompositeUserSource
 from users.csv_source import CSVUserSource
@@ -45,6 +48,8 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 app.secret_key = os.environ.get("SECRET_KEY", "insecure-testing-secret")
 # Persistent login cookie survives browser restarts
 app.permanent_session_lifetime = timedelta(days=30)
+# Session contents live in SQLite (SESSION_DB); the cookie only holds an opaque id
+app.session_interface = SQLiteSessionInterface()
 
 # Session key under which the currently-logged-in user's sub is stored
 LOGIN_SESSION_KEY = "logged_in_sub"

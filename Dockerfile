@@ -10,7 +10,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 # Copy application source
-COPY app.py ./
+COPY app.py session_store.py ./
 COPY users/ users/
 COPY templates/ templates/
 
@@ -19,7 +19,7 @@ COPY users.csv ./
 
 ENV USERS_CSV=users.csv
 
-# Persist the RSA signing key across container restarts
+# Persist the RSA signing key and session database across container restarts
 VOLUME /data
 
 EXPOSE 5000

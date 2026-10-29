@@ -10,6 +10,7 @@ from joserfc import jwt as jose_jwt
 from joserfc.jwk import RSAKey
 
 import app as oidc_app
+from session_store import SQLiteSessionInterface
 
 
 def _decode_jwt_payload(token: str) -> dict:
@@ -30,6 +31,7 @@ def application(tmp_path):
     csv_file.write_text("sub,name,email\nalice,Alice Smith,alice@example.com\nbob,Bob Jones,bob@example.com\n")
     oidc_app.app.config["TESTING"] = True
     oidc_app.app.config["SECRET_KEY"] = "test-secret"
+    oidc_app.app.session_interface = SQLiteSessionInterface(str(tmp_path / "sessions.db"))
     oidc_app._auth_codes.clear()
     oidc_app._access_tokens.clear()
     oidc_app.app.config["ENV_USERS_CSV"] = str(csv_file)
@@ -523,6 +525,62 @@ class TestLogout:
         resp = client.get("/logout", follow_redirects=False)
         assert resp.status_code == 302
         assert resp.headers["Location"].endswith("/")
+
+
+# ---------------------------------------------------------------------------
+# SQLite-backed session store
+# ---------------------------------------------------------------------------
+
+class TestSQLiteSessionStore:
+    def _session_cookie(self, client):
+        return client.get_cookie(oidc_app.app.config["SESSION_COOKIE_NAME"])
+
+    def test_cookie_holds_opaque_id_not_session_data(self, client):
+        _do_login(client, "alice")
+        cookie = self._session_cookie(client)
+        assert cookie is not None
+        assert "alice" not in cookie.value
+        assert "." not in cookie.value  # not a signed itsdangerous payload
+
+    def test_session_row_written_to_database(self, client, tmp_path):
+        import sqlite3
+        _do_login(client, "alice")
+        sid = self._session_cookie(client).value
+        conn = sqlite3.connect(tmp_path / "sessions.db")
+        row = conn.execute("SELECT data FROM sessions WHERE sid = ?", (sid,)).fetchone()
+        assert row is not None
+        assert "alice" in row[0]
+
+    def test_login_survives_server_restart(self, client, tmp_path):
+        _do_login(client, "alice")
+        # Simulate a restart: a fresh interface (new connection) on the same file
+        oidc_app.app.session_interface = SQLiteSessionInterface(str(tmp_path / "sessions.db"))
+        resp = client.get(_authorize_url(), follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["Location"].startswith(_AUTHORIZE_PARAMS["redirect_uri"])
+
+    def test_unknown_session_id_starts_fresh(self, client):
+        client.set_cookie(oidc_app.app.config["SESSION_COOKIE_NAME"], "bogus-id")
+        html = client.get("/").data.decode()
+        assert 'data-testid="login-status-signed-out"' in html
+
+    def test_expired_session_is_ignored(self, client, tmp_path):
+        import sqlite3
+        _do_login(client, "alice")
+        sid = self._session_cookie(client).value
+        conn = sqlite3.connect(tmp_path / "sessions.db")
+        conn.execute("UPDATE sessions SET expires = 0 WHERE sid = ?", (sid,))
+        conn.commit()
+        html = client.get("/").data.decode()
+        assert 'data-testid="login-status-signed-out"' in html
+
+    def test_unwritable_db_path_falls_back_to_memory(self, application, monkeypatch):
+        monkeypatch.setenv("SESSION_DB", "/nonexistent_dir_xyz/sessions.db")
+        application.session_interface = SQLiteSessionInterface()
+        client = application.test_client()
+        _do_login(client, "alice")
+        with client.session_transaction() as s:
+            assert s.get("logged_in_sub") == "alice"
 
 
 # ---------------------------------------------------------------------------
